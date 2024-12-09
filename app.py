@@ -207,5 +207,8 @@ else:
             col8.header('=')
             col9.metric('Total Received', f'₹ {round(total_raised / 10000000, 2)} Cr.')
 
+    # Subheader for detailed transaction data
     st.subheader("Detailed Transaction Data")
+
+    # Display the final data in a dataframe format
     st.dataframe(final_data, hide_index=True)
