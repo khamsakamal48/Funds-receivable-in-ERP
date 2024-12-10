@@ -104,6 +104,8 @@ with st.sidebar:
                                       label_visibility='collapsed')
 
 
+
+
 # Streamline the data
 # ----------------------------------------------------------------------------------------------------------------------
 # Convert Document date to datetime format
