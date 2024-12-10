@@ -2,6 +2,20 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 from datetime import date
+from dotenv import load_dotenv
+import os
+
+# Load Environment variables
+# ----------------------------------------------------------------------------------------------------------------------
+# Load the .env file
+load_dotenv()
+
+# Fetch environment variables
+db_address = os.getenv("DB_ADDRESS")
+db_port = os.getenv("DB_PORT")
+db_username = os.getenv("DB_USERNAME")
+db_password = os.getenv("DB_PASSWORD")
+db_name = os.getenv("DB")
 
 # Default page configuration
 # ----------------------------------------------------------------------------------------------------------------------
@@ -86,7 +100,7 @@ with st.sidebar:
 
     # Upload Project Master
     st.subheader('3. Project Master file')
-    project_master = st.file_uploader('Upload the Project Master created manually', type=['csv', 'xlsx'],
+    project_directory = st.file_uploader('Upload the Project Master created manually', type=['csv', 'xlsx'],
                                       label_visibility='collapsed')
 
 
@@ -206,6 +220,12 @@ else:
             col7.metric('Rest of the World', f'₹ {round(non_indian_hf_donations_total / 10000000, 2)} Cr.')
             col8.header('=')
             col9.metric('Total Received', f'₹ {round(total_raised / 10000000, 2)} Cr.')
+
+    # Cause Classification
+    project_directory = pd.DataFrame(columns=['Project Name', 'Category'])
+
+    st.subheader("Project Classification")
+    st.dataframe(project_directory)
 
     # Subheader for detailed transaction data
     st.subheader("Detailed Transaction Data")
