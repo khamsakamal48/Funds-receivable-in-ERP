@@ -3,3 +3,5 @@ streamlit
 openpyxl
 watchdog
 python-dotenv
+sqlalchemy
+psycopg2-binary
