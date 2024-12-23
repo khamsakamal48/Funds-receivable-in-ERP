@@ -186,7 +186,7 @@ with st.sidebar:
     wbs = st.file_uploader('Upload the WBS file from ERP', type=['csv', 'xlsx'], label_visibility='collapsed')
 
     # Upload Project Master
-    st.subheader('3. Project Master file', help="It should only contain columns: 'Project Name' and 'Category'")
+    st.subheader('3. Project Master file', help="It should contain columns: 'Project Name' and 'Category'")
     project_directory_new = st.file_uploader('Upload the Project Master created manually', type=['csv', 'xlsx'],
                                       label_visibility='collapsed')
 
@@ -261,6 +261,8 @@ if transaction is not None:
     # Drop blank columns
     transaction = transaction.dropna(subset=['Document type']).reset_index(drop=True)
 
+    update_sql_table(transaction, 'transactions', schema='funds_received', replace=True)
+
 else:
     query_transaction = '''
     SELECT
@@ -273,41 +275,52 @@ else:
 
 if wbs is not None:
     wbs = load_to_dataframe(wbs, wbs.type)
+    update_sql_table(wbs, 'wbs', schema='funds_received', replace=True)
 
-    if transaction is not None:
-        # Perform WBS mapping
-        transaction = transaction.merge(wbs[['WBS ', 'WBS Details ']].drop_duplicates(), how='left',
-                                        left_on='Project definition', right_on='WBS ')
+else:
+    query_transaction = '''
+        SELECT
+            *
+        FROM
+            erp_data.funds_received.wbs
+        '''
 
-        transaction = transaction.merge(wbs[['Sub WBS ', 'SUB WBS Details']].drop_duplicates(), how='left',
-                                        left_on='Object', right_on='Sub WBS ')
+    wbs = fetch_data_from_sql(query_transaction)
 
-        transaction['Project Id'] = transaction['SUB WBS Details'].apply(
-            lambda x: str(x).strip().lower().replace(' ', '_'))
+# Remove extra spaces from column names
+transaction_col = transaction.columns
+transaction_col = [col.strip() for col in transaction_col]
+transaction.columns = transaction_col
 
-if transaction is not None:
+wbs_col = wbs.columns
+wbs_col = [col.strip() for col in wbs_col]
+wbs.columns = wbs_col
+
+if transaction.shape[0] > 0 and wbs.shape[0] > 0 and project_directory.shape[0] > 0:
+    # Perform WBS mapping
+    transaction = transaction.merge(wbs[['WBS', 'WBS Details']].drop_duplicates(), how='left',
+                                    left_on='Project definition', right_on='WBS')
+
+    transaction = transaction.merge(wbs[['Sub WBS', 'SUB WBS Details']].drop_duplicates(), how='left',
+                                    left_on='Object', right_on='Sub WBS')
+
+    st.dataframe(transaction)
+
+    transaction['Project Id'] = transaction['SUB WBS Details'].apply(
+        lambda x: str(x).strip().lower().replace(' ', '_'))
+
     # Assign Category
     transaction = transaction.merge(project_directory[['Project Id', 'Category']], how='left', on='Project Id').copy()
 
 # Final Data
-# Get existing data
-query_final_data = '''
-    SELECT
-        *
-    FROM
-        erp_data.funds_received.transactions
-'''
+final_data = transaction[(transaction['Document Date'].between(start_date, end_date))]
 
-if transaction is not None or wbs is not None or project_directory is not None:
-     final_data = transaction[
-         (transaction['Document Date'].between(start_date, end_date))
-     ]
+# if transaction is None:
+#     final_data = final_data.merge(project_directory[['Project Id', 'Category']], how='left', on='Project Id')
+#
+# if 'Category_x' in final_data.columns and not 'Category' in final_data.columns:
+#     final_data = final_data.rename(columns={'Category_x': 'Category'})
 
-     update_sql_table(final_data, 'transactions', schema='funds_received', replace=True)
-
-     fetch_data_from_sql.clear(query_final_data)
-
-final_data = fetch_data_from_sql(query_final_data)
 
 # Present the data
 # ----------------------------------------------------------------------------------------------------------------------
@@ -317,8 +330,8 @@ if final_data.shape[0] == 0:
 else:
     # Donation Received Metrics
     st.header('Summary')
-
-    final_data = (final_data[final_data['Document Date'].between(start_date, end_date)])
+    #
+    # final_data = (final_data[final_data['Document Date'].between(start_date, end_date)])
 
     # Calculate metrics
     # Indian Donations
@@ -389,31 +402,52 @@ else:
             col9.metric('Total Received', get_amount_in_cr(total_raised))
 
     # Cause Classification
-    if wbs is not None:
-        st.write('')
-        st.subheader('Project Classification')
+    st.write('')
+    st.subheader('Project Classification')
 
-        col10, col11 = st.columns(2)
+    col10, col11 = st.columns(2)
 
-        # Cause-wise donation
-        donations_by_cause = final_data.groupby('Category')['Val/COArea Crcy'].sum().abs()
-        donations_by_cause = donations_by_cause.reset_index(drop=False)
-        donations_by_cause.columns = ['Cause', 'Amount Received']
+    # Cause-wise donation
+    donations_by_cause = final_data[(final_data['Document type'] == 'DR')].groupby('Category', dropna=False)['Val/COArea Crcy'].sum().abs()
+    donations_by_cause = donations_by_cause.reset_index(drop=False)
 
-        with col10:
-            st.dataframe(donations_by_cause, use_container_width=True, hide_index=True)
+    donations_by_cause.columns = ['Cause', 'Amount Received']
 
-        with st.expander('## Complete list of Project Master/Directory'):
-            csv = convert_df(project_directory[['Project Name', 'Category']])
+    with col10:
+        st.dataframe(donations_by_cause, use_container_width=True, hide_index=True)
+
+    with col11:
+
+        st.write('##### Missing categories')
+        with st.expander('## List of Donations with missing categories'):
+
+            # Projects with missing categories
+            merged_donations = pd.concat([
+                indian_donations, hf_donations_raised, non_indian_hf_donations
+            ])
+
+            final_data_with_missing_category = merged_donations.loc[
+                (final_data['Category'].isnull()),
+                ['Name of offsetting account', 'Document Date', 'Val/COArea Crcy', 'WBS',
+                 'WBS Details', 'Sub WBS', 'SUB WBS Details', 'Category']
+            ].rename(columns={'SUB WBS Details': 'Project Name'})
+
+            csv = convert_df(final_data_with_missing_category)
 
             st.download_button(
-                label='Download',
+                label='Download Projects with missing categories',
                 data=csv,
                 file_name='Project Directory.csv',
                 mime='text/csv',
                 use_container_width=True,
                 type='primary'
             )
+
+            st.dataframe(final_data_with_missing_category, hide_index=True, use_container_width=True)
+
+        st.write('')
+        st.write('##### Current Project Master')
+        with st.expander('## Complete list of Project Master/Directory'):
 
             st.dataframe(project_directory[['Project Name', 'Category']], hide_index=True, use_container_width=True)
 
@@ -422,4 +456,4 @@ else:
     st.subheader("Detailed Transaction Data")
 
     # Display the final data in a dataframe format
-    st.dataframe(final_data, hide_index=True)
+    st.dataframe(merged_donations, hide_index=True, use_container_width=True)
