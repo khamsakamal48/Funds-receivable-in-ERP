@@ -237,13 +237,13 @@ with st.sidebar:
     # Standardise column names
     project_directory.columns = change_column_names(project_directory.columns)
 
-    # st.divider()
-    #
-    # # Clear Cache
-    # if st.button("Clear Cache"):
-    #     # Clear values from *all* all in-memory and on-disk data caches:
-    #     # i.e. clear values from both square and cube
-    #     st.cache_data.clear()
+    st.divider()
+
+    # Clear Cache
+    if st.button("Clear Cache"):
+        # Clear values from *all* all in-memory and on-disk data caches:
+        # i.e. clear values from both square and cube
+        st.cache_data.clear()
 
 # Streamline the data
 # ----------------------------------------------------------------------------------------------------------------------
@@ -304,8 +304,6 @@ if transaction.shape[0] > 0 and wbs.shape[0] > 0 and project_directory.shape[0] 
     transaction = transaction.merge(wbs[['Sub WBS', 'SUB WBS Details']].drop_duplicates(), how='left',
                                     left_on='Object', right_on='Sub WBS')
 
-    st.dataframe(transaction)
-
     transaction['Project Id'] = transaction['SUB WBS Details'].apply(
         lambda x: str(x).strip().lower().replace(' ', '_'))
 
@@ -330,8 +328,6 @@ if final_data.shape[0] == 0:
 else:
     # Donation Received Metrics
     st.header('Summary')
-    #
-    # final_data = (final_data[final_data['Document Date'].between(start_date, end_date)])
 
     # Calculate metrics
     # Indian Donations
@@ -450,6 +446,50 @@ else:
         with st.expander('## Complete list of Project Master/Directory'):
 
             st.dataframe(project_directory[['Project Name', 'Category']], hide_index=True, use_container_width=True)
+
+
+    # Tracking distribution through SB
+
+    # Get SB Entries
+    sb_entries = final_data[(final_data['Document type'] == 'SB')].copy()
+
+    # Projects list
+    project_lists = final_data.loc[final_data['Document type'] == 'DR', 'Object'].drop_duplicates().to_list()
+
+    # # Projects that were reallocated
+    # project_lists_alloc = [project for project in
+    #                        final_data.loc[final_data['Document type'] == 'DR', 'Object'].drop_duplicates().to_list() if
+    #                        project[-3].isnumeric()]
+    #
+    # # Projects that were not reallocated
+    # project_lists_non_alloc = [project for project in
+    #                            final_data.loc[final_data['Document type'] == 'DR', 'Object'].drop_duplicates().to_list()
+    #                            if not project[-3].isnumeric()]
+
+    donations_by_cause_1 = final_data[
+        (final_data['Document type'] == 'DR') &
+        (final_data['Object'].isin(project_lists))
+    ].reset_index(drop=True).copy()
+
+    def get_sb_donations(obj):
+
+        # Get subset of data with reference numbers belonging to a WBS code
+        df = final_data[
+            final_data['Ref. document number'].isin(
+                final_data.loc[
+                    final_data['Object'] == obj,
+                    'Ref. document number'
+                ].drop_duplicates()
+            )
+        ].copy()
+
+        return df
+
+    for project in project_lists:
+        donations_by_cause_2 = get_sb_donations(project)
+        break
+
+    st.write(project_lists, hide_index=True, use_container_width=True)
 
     # Subheader for detailed transaction data
     st.write('')
