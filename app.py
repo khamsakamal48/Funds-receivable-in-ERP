@@ -448,10 +448,9 @@ else:
             st.dataframe(project_directory[['Project Name', 'Category']], hide_index=True, use_container_width=True)
 
 
+    # ------------------------------------------------------------------------------------------------------------------
     # Tracking distribution through SB
-
-    # Get SB Entries
-    sb_entries = final_data[(final_data['Document type'] == 'SB')].copy()
+    # ------------------------------------------------------------------------------------------------------------------
 
     # Projects list
     project_lists = final_data.loc[final_data['Document type'] == 'DR', 'Object'].drop_duplicates().to_list()
@@ -466,30 +465,83 @@ else:
     #                            final_data.loc[final_data['Document type'] == 'DR', 'Object'].drop_duplicates().to_list()
     #                            if not project[-3].isnumeric()]
 
-    donations_by_cause_1 = final_data[
-        (final_data['Document type'] == 'DR') &
-        (final_data['Object'].isin(project_lists))
-    ].reset_index(drop=True).copy()
+    # donations_by_cause_1 = final_data[
+    #     (final_data['Document type'] == 'DR') &
+    #     (final_data['Object'].isin(project_lists))
+    # ].reset_index(drop=True).copy()
 
     def get_sb_donations(obj):
 
-        # Get subset of data with reference numbers belonging to a WBS code
-        df = final_data[
-            final_data['Ref. document number'].isin(
-                final_data.loc[
-                    final_data['Object'] == obj,
-                    'Ref. document number'
-                ].drop_duplicates()
-            )
-        ].copy()
+        # Get subset of data belonging to a reference number
+        df = final_data[final_data['Ref. document number'] == obj].copy()
 
-        return df
+        # Filling na's with blank
+        for col in df.columns:
+            df[col] = df[col].fillna('')
 
-    for project in project_lists:
-        donations_by_cause_2 = get_sb_donations(project)
-        break
+        # Create a pivot report
+        df_pivot = df.groupby(['Ref. document number', 'WBS',
+                                 'WBS Details', 'Sub WBS', 'SUB WBS Details'])['Val/COArea Crcy'].sum()
 
-    st.write(project_lists, hide_index=True, use_container_width=True)
+        # Reset the index for further filtering
+        df_pivot = df_pivot.reset_index(drop=False).copy()
+
+        # if obj == 2406012170:
+        #     print('new')
+        #     print(df.shape[0])
+        #     print(df_pivot.shape[0])
+
+        wbs_list = df_pivot['WBS'].str.lower().drop_duplicates().to_list()
+        sub_wbs_list = df_pivot['SUB WBS Details'].str.lower().drop_duplicates().to_list()
+
+        wbs_list.extend(sub_wbs_list)
+
+        # Check if there's a WBS related to IITBHF
+        is_hf = False
+        for w in wbs_list:
+            if 'iitbhf' in w or 'grant' in w or 'iitb hf' in w:
+                is_hf = True
+                break
+
+        # Check for shape
+        if df_pivot.shape[0] > 1:
+
+            # Get donations greater than 0 as long as it's not from HF
+            if is_hf:
+                df_pivot = df_pivot[~df_pivot['WBS'].str.lower().str.contains('iitbhf')].copy()
+
+                df_pivot = df_pivot[~(df_pivot['SUB WBS Details'].str.lower().str.contains('grant'))].copy()
+
+                df_pivot = df_pivot[df_pivot['Val/COArea Crcy'] > 0].copy()
+
+            else:
+                df_pivot = df_pivot[df_pivot['Val/COArea Crcy'] < 0].copy()
+
+        elif df_pivot.shape[0] == 1:
+            if is_hf:
+                df_pivot = pd.DataFrame(columns=['Ref. document number', 'WBS',
+                                 'WBS Details', 'Sub WBS', 'SUB WBS Details', 'Val/COArea Crcy'], index=[0])
+
+        # # Change the negative numbers
+        # df_pivot['Val/COArea Crcy'] = df_pivot['Val/COArea Crcy'].abs()
+
+        return df_pivot
+
+    donations_by_cause_1 = pd.DataFrame()
+
+    # Get Unique reference document numbers
+    ref_nums = final_data.loc[
+        (final_data['Document type'].isin(['DR','SB'])),
+        'Ref. document number'
+    ].drop_duplicates().to_list()
+
+    for ref in ref_nums:
+        donations_by_cause_2 = get_sb_donations(ref)
+
+        donations_by_cause_1 = pd.concat([donations_by_cause_1, donations_by_cause_2])
+
+    st.write(donations_by_cause_1['Val/COArea Crcy'].sum())
+    st.dataframe(donations_by_cause_1, use_container_width=True, hide_index=True)
 
     # Subheader for detailed transaction data
     st.write('')
@@ -497,3 +549,6 @@ else:
 
     # Display the final data in a dataframe format
     st.dataframe(merged_donations, hide_index=True, use_container_width=True)
+
+    st.dataframe(final_data, hide_index=True, use_container_width=True)
+
