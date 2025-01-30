@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import os
 from sqlalchemy import create_engine
 from urllib.parse import quote_plus
+from collections import defaultdict
 
 # Load Environment variables
 # ----------------------------------------------------------------------------------------------------------------------
@@ -137,6 +138,91 @@ def convert_df(df):
 
 def get_amount_in_cr(amount):
     return f'₹ {round(amount / 10000000, 2)} Cr.'
+
+
+# Find donations that nullifies each other
+def find_nullifying_groups(df):
+    """
+    Efficiently find and return rows where values in 'Value in Obj. Crcy' nullify each other.
+
+    Args:
+    df (pd.DataFrame): The input DataFrame with columns 'Ref. document number' and 'Value in Obj. Crcy'.
+
+    Returns:
+    pd.DataFrame: A DataFrame containing the 'Ref. document number' and 'Value in Obj. Crcy'
+                  of nullifying groups.
+    """
+    # Sort values by absolute amount in descending order (higher values first)
+    df = df.reindex(df['Val/COArea Crcy'].abs().sort_values(ascending=False).index)
+
+    # Dictionary to store unmatched values with their index positions
+    unmatched = defaultdict(list)
+    nullifying_indices = set()
+
+    for idx, row in df.iterrows():
+        value = row['Val/COArea Crcy']
+        opposite_value = -value
+
+        if opposite_value in unmatched:
+            # Match with the first occurrence of opposite value
+            match_idx = unmatched[opposite_value].pop(0)
+            nullifying_indices.update([idx, match_idx])
+
+            # Remove the key if no more unmatched values exist
+            if not unmatched[opposite_value]:
+                del unmatched[opposite_value]
+        else:
+            # Store index of the current unmatched value
+            unmatched[value].append(idx)
+
+    # Filter DataFrame to include only nullifying rows
+    return df.loc[list(nullifying_indices)]
+
+
+# Get Fund Utilisation Report for a WBS code
+def get_fur(wbs_code):
+
+    # Create an empty dataframe
+    wbs_breakup = pd.DataFrame()
+
+    # Check for SB entries
+    df = transaction[
+        (transaction['Project definition'] == wbs_code) &
+        (transaction['Document type'] == 'SB')
+    ]
+
+    # Step 2
+    if df.shape[0] == 0:
+        wbs_breakup = pd.concat([
+            wbs_breakup,
+            transaction[
+                transaction['Project definition'] == wbs_code
+            ]
+        ], ignore_index=True)
+
+        return wbs_breakup
+
+    else:
+        # Sort
+        df = df.sort_values(by=['Fiscal Year', 'Val/COArea Crcy'], ascending=[True, False]).copy()
+
+        # Step 3
+        df_nullified = find_nullifying_groups(df)
+
+        # Step 4
+        data_non_null = df[~df['Ref. document number'].isin(df_nullified['Ref. document number'])]
+
+        # Step 5.1 and 5.2
+        data_sb = transaction[transaction['Ref. document number'].isin(data_non_null['Ref. document number'])]
+
+        # Step 5.3
+        data_proj = data_sb[data_sb['Project definition'] != wbs_code]
+        # data_proj = data_sb.copy()
+
+        # Concatenate the final data
+        project_breakup = pd.concat([wbs_breakup, data_proj], ignore_index=True)
+
+        return project_breakup
 
 # Page Title
 # ----------------------------------------------------------------------------------------------------------------------
@@ -403,8 +489,47 @@ else:
 
     col10, col11 = st.columns(2)
 
+    # Extract only DR Data
+    dr_data = final_data[final_data['Document type'] == 'DR'].copy()
+
+    # Extract LP Projects
+    lp_data = dr_data[
+        (dr_data['Project definition'].str.contains('LP')) |
+        (dr_data['Object'].str.contains('LP'))
+        ]
+
+    # Extract HF Data
+    hf_data = dr_data[
+        (dr_data['Project definition'].str.contains('HF')) |
+        (dr_data['Object'].str.contains('HF'))
+        ]
+
+    # Extract CSR Projects
+    csr_data = dr_data[
+        (dr_data['Project definition'].str.contains('CSRP')) |
+        (dr_data['Object'].str.contains('CSRP'))
+        ]
+
     # Cause-wise donation
-    donations_by_cause = final_data[(final_data['Document type'] == 'DR')].groupby('Category', dropna=False)['Val/COArea Crcy'].sum().abs()
+    donations_by_cause = dr_data[
+        # Ignore Legacy Projects
+        (
+                ~(dr_data['Project definition'].isin(lp_data['Project definition'])) |
+                ~(dr_data['Object'].isin(lp_data['Object']))
+        ) &
+
+        # Ignore HF Projects
+        (
+                ~(dr_data['Project definition'].isin(hf_data['Project definition'])) |
+                ~(dr_data['Object'].isin(hf_data['Object']))
+        ) &
+
+        # Ignore CSR Projects
+        (
+                ~(dr_data['Project definition'].isin(csr_data['Project definition'])) |
+                ~(dr_data['Object'].isin(csr_data['Object']))
+        )
+    ].groupby('Category', dropna=False)['Val/COArea Crcy'].sum().abs()
     donations_by_cause = donations_by_cause.reset_index(drop=False)
 
     donations_by_cause.columns = ['Cause', 'Amount Received']
@@ -453,7 +578,7 @@ else:
     # ------------------------------------------------------------------------------------------------------------------
 
     # Projects list
-    project_lists = final_data.loc[final_data['Document type'] == 'DR', 'Object'].drop_duplicates().to_list()
+    # project_lists = final_data.loc[final_data['Document type'] == 'DR', 'Object'].drop_duplicates().to_list()
 
     # # Projects that were reallocated
     # project_lists_alloc = [project for project in
@@ -470,85 +595,147 @@ else:
     #     (final_data['Object'].isin(project_lists))
     # ].reset_index(drop=True).copy()
 
-    def get_sb_donations(obj):
+    # def get_sb_donations(obj):
+    #
+    #     # Get subset of data belonging to a reference number
+    #     df = final_data[final_data['Ref. document number'] == obj].copy()
+    #
+    #     # Filling na's with blank
+    #     for col in df.columns:
+    #         df[col] = df[col].fillna('')
+    #
+    #     # Create a pivot report
+    #     df_pivot = df.groupby(['Ref. document number', 'WBS',
+    #                              'WBS Details', 'Sub WBS', 'SUB WBS Details'])['Val/COArea Crcy'].sum()
+    #
+    #     # Reset the index for further filtering
+    #     df_pivot = df_pivot.reset_index(drop=False).copy()
+    #
+    #     # if obj == 2406012170:
+    #     #     print('new')
+    #     #     print(df.shape[0])
+    #     #     print(df_pivot.shape[0])
+    #
+    #     wbs_list = df_pivot['WBS'].str.lower().drop_duplicates().to_list()
+    #     sub_wbs_list = df_pivot['SUB WBS Details'].str.lower().drop_duplicates().to_list()
+    #
+    #     wbs_list.extend(sub_wbs_list)
+    #
+    #     # Check if there's a WBS related to IITBHF
+    #     is_hf = False
+    #     for w in wbs_list:
+    #         if 'iitbhf' in w or 'grant' in w or 'iitb hf' in w:
+    #             is_hf = True
+    #             break
+    #
+    #     # Check for shape
+    #     if df_pivot.shape[0] > 1:
+    #
+    #         # Get donations greater than 0 as long as it's not from HF
+    #         if is_hf:
+    #             df_pivot = df_pivot[~df_pivot['WBS'].str.lower().str.contains('iitbhf')].copy()
+    #
+    #             df_pivot = df_pivot[~(df_pivot['SUB WBS Details'].str.lower().str.contains('grant'))].copy()
+    #
+    #             df_pivot = df_pivot[df_pivot['Val/COArea Crcy'] > 0].copy()
+    #
+    #         else:
+    #             df_pivot = df_pivot[df_pivot['Val/COArea Crcy'] < 0].copy()
+    #
+    #     elif df_pivot.shape[0] == 1:
+    #         if is_hf:
+    #             df_pivot = pd.DataFrame(columns=['Ref. document number', 'WBS',
+    #                              'WBS Details', 'Sub WBS', 'SUB WBS Details', 'Val/COArea Crcy'], index=[0])
+    #
+    #     # # Change the negative numbers
+    #     # df_pivot['Val/COArea Crcy'] = df_pivot['Val/COArea Crcy'].abs()
+    #
+    #     return df_pivot
+    #
+    # donations_by_cause_1 = pd.DataFrame()
+    #
+    # # Get Unique reference document numbers
+    # ref_nums = final_data.loc[
+    #     (final_data['Document type'].isin(['DR','SB'])),
+    #     'Ref. document number'
+    # ].drop_duplicates().to_list()
+    #
+    # for ref in ref_nums:
+    #     donations_by_cause_2 = get_sb_donations(ref)
+    #
+    #     donations_by_cause_1 = pd.concat([donations_by_cause_1, donations_by_cause_2])
+    #
+    # st.dataframe(donations_by_cause_1, use_container_width=True, hide_index=True)
 
-        # Get subset of data belonging to a reference number
-        df = final_data[final_data['Ref. document number'] == obj].copy()
+    # # Subheader for detailed transaction data
+    # st.write('')
+    # st.subheader("Detailed Transaction Data")
+    #
+    # # Display the final data in a dataframe format
+    # # st.dataframe(merged_donations, hide_index=True, use_container_width=True)
+    #
+    # st.dataframe(final_data, hide_index=True, use_container_width=True)
 
-        # Filling na's with blank
-        for col in df.columns:
-            df[col] = df[col].fillna('')
+    # ------------------------------------------------------------------------------------------------------------------
+    # Get FUR for a WBS Code
+    # ------------------------------------------------------------------------------------------------------------------
+    # Get Projects
+    project_lists = transaction['Project definition'].drop_duplicates().to_list()
 
-        # Create a pivot report
-        df_pivot = df.groupby(['Ref. document number', 'WBS',
-                                 'WBS Details', 'Sub WBS', 'SUB WBS Details'])['Val/COArea Crcy'].sum()
+    st.divider()
 
-        # Reset the index for further filtering
-        df_pivot = df_pivot.reset_index(drop=False).copy()
+    st.header('Get Fund Utilisation for a WBS Code')
+    col12, col13 = st.columns(2)
 
-        # if obj == 2406012170:
-        #     print('new')
-        #     print(df.shape[0])
-        #     print(df_pivot.shape[0])
+    # WBS Code selection
+    with col12:
+        wbs_code = st.selectbox(
+            'Please select a WBS Code',
+            project_lists,
+            index=None,
+            placeholder='Select WBS Code',
+            label_visibility='hidden'
+        )
 
-        wbs_list = df_pivot['WBS'].str.lower().drop_duplicates().to_list()
-        sub_wbs_list = df_pivot['SUB WBS Details'].str.lower().drop_duplicates().to_list()
 
-        wbs_list.extend(sub_wbs_list)
+    with col13:
+        st.write('')
 
-        # Check if there's a WBS related to IITBHF
-        is_hf = False
-        for w in wbs_list:
-            if 'iitbhf' in w or 'grant' in w or 'iitb hf' in w:
-                is_hf = True
-                break
 
-        # Check for shape
-        if df_pivot.shape[0] > 1:
+    col14, col15 = st.columns(2)
 
-            # Get donations greater than 0 as long as it's not from HF
-            if is_hf:
-                df_pivot = df_pivot[~df_pivot['WBS'].str.lower().str.contains('iitbhf')].copy()
+    with col14:
+        # If a WBS code is selected, generate and display FUR
+        if wbs_code:
+            # Generate FUR & store it into a DataFrame
+            df_wbs_code = get_fur(wbs_code)
 
-                df_pivot = df_pivot[~(df_pivot['SUB WBS Details'].str.lower().str.contains('grant'))].copy()
+            # Change Year to String
+            df_wbs_code['Fiscal Year'] = df_wbs_code['Fiscal Year'].astype(str)
 
-                df_pivot = df_pivot[df_pivot['Val/COArea Crcy'] > 0].copy()
+            # Prepare data of the amount which flowed 'To' the WBS Code
+            df_wbs_code_to = df_wbs_code[df_wbs_code['Val/COArea Crcy'] < 0].copy()
 
-            else:
-                df_pivot = df_pivot[df_pivot['Val/COArea Crcy'] < 0].copy()
+            # Change the amount to positive
+            df_wbs_code_to['Val/COArea Crcy'] = df_wbs_code_to['Val/COArea Crcy'].abs()
 
-        elif df_pivot.shape[0] == 1:
-            if is_hf:
-                df_pivot = pd.DataFrame(columns=['Ref. document number', 'WBS',
-                                 'WBS Details', 'Sub WBS', 'SUB WBS Details', 'Val/COArea Crcy'], index=[0])
+            # Prepare data of the amount which flowed 'From' the WBS Code
+            df_wbs_code_from = df_wbs_code[df_wbs_code['Val/COArea Crcy'] > 0].copy()
 
-        # # Change the negative numbers
-        # df_pivot['Val/COArea Crcy'] = df_pivot['Val/COArea Crcy'].abs()
+            # Display FUR
+            st.subheader('Inflow')
+            st.dataframe(df_wbs_code_to.pivot_table(
+                index=['Fiscal Year', 'Project definition', 'Object'],
+                values=['Val/COArea Crcy'],
+                aggfunc='sum'
+            ), hide_index=False, use_container_width=True)
 
-        return df_pivot
+    with col15:
+        st.subheader('Outflow')
+        st.dataframe(df_wbs_code_from.pivot_table(
+            index=['Fiscal Year', 'Project definition', 'Object'],
+            values=['Val/COArea Crcy'],
+            aggfunc='sum'
+        ), hide_index=False, use_container_width=True)
 
-    donations_by_cause_1 = pd.DataFrame()
-
-    # Get Unique reference document numbers
-    ref_nums = final_data.loc[
-        (final_data['Document type'].isin(['DR','SB'])),
-        'Ref. document number'
-    ].drop_duplicates().to_list()
-
-    for ref in ref_nums:
-        donations_by_cause_2 = get_sb_donations(ref)
-
-        donations_by_cause_1 = pd.concat([donations_by_cause_1, donations_by_cause_2])
-
-    st.write(donations_by_cause_1['Val/COArea Crcy'].sum())
-    st.dataframe(donations_by_cause_1, use_container_width=True, hide_index=True)
-
-    # Subheader for detailed transaction data
-    st.write('')
-    st.subheader("Detailed Transaction Data")
-
-    # Display the final data in a dataframe format
-    st.dataframe(merged_donations, hide_index=True, use_container_width=True)
-
-    st.dataframe(final_data, hide_index=True, use_container_width=True)
-
+    st.dataframe(df_wbs_code, hide_index=True, use_container_width=True)
