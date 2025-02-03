@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import streamlit as st
 from datetime import datetime
 from datetime import date
@@ -137,6 +138,11 @@ def convert_df(df):
 
 
 def get_amount_in_cr(amount):
+    # if amount > 0:
+    #     return f'₹ {round(amount / 10000000, 2)} Cr.'
+    #
+    # else:
+    #     return 0
     return f'₹ {round(amount / 10000000, 2)} Cr.'
 
 
@@ -223,6 +229,69 @@ def get_fur(wbs_code):
         project_breakup = pd.concat([wbs_breakup, data_proj], ignore_index=True)
 
         return project_breakup
+
+def get_flow(df, flow):
+
+    df = df.copy()
+
+    # Change Year to String
+    df['Fiscal Year'] = df['Fiscal Year'].astype(str)
+
+    if flow == 'inflow':
+        # Prepare data of the amount which flowed 'From' other WBS Codes
+        df = df[df['Val/COArea Crcy'] < 0].copy()
+
+    elif flow == 'outflow':
+        # Prepare data of the amount which flowed 'to' other WBS Code
+        df = df[df['Val/COArea Crcy'] > 0].copy()
+
+    # Change the amount to positive
+    df['Val/COArea Crcy'] = df['Val/COArea Crcy'].abs()
+
+    df = df.pivot_table(
+        index=['Ref. document number', 'Fiscal Year', 'Project definition', 'Object'],
+        values=['Val/COArea Crcy'],
+        aggfunc='sum'
+    )
+
+    df = df.reset_index(drop=False).copy()
+
+    df['Ref. document number'] = df['Ref. document number'].astype(str)
+
+    return df
+
+
+def get_admin_expense(wbs_code, flow):
+    # Records with Cost Element = 510225
+    df = transaction[
+        (
+            (transaction['Cost Element'] == 510225) |
+            (transaction['Cost Element'] == '510225')
+        ) &
+        (transaction['Project definition'] == wbs_code) &
+        (transaction['Document type'] == 'SB')
+    ]
+
+    df = get_flow(df, flow)
+
+    return df
+
+
+def get_interests(wbs_code, flow):
+    # Records with offsetting account = 811002
+    df = transaction[
+        (
+            (transaction['Offsetting acct no.'] == '811002') |
+            (transaction['Offsetting acct no.'] == 811002)
+        ) &
+        (transaction['Project definition'] == wbs_code) &
+        (transaction['Document type'] == 'SB')
+        ]
+
+    df = get_flow(df, flow)
+
+    return df
+
 
 # Page Title
 # ----------------------------------------------------------------------------------------------------------------------
@@ -685,57 +754,246 @@ else:
     st.divider()
 
     st.header('Get Fund Utilisation for a WBS Code')
+    st.write('')
     col12, col13 = st.columns(2)
 
     # WBS Code selection
     with col12:
-        wbs_code = st.selectbox(
+        wbscode = st.selectbox(
             'Please select a WBS Code',
             project_lists,
             index=None,
             placeholder='Select WBS Code',
-            label_visibility='hidden'
+            label_visibility='collapsed'
         )
 
-
     with col13:
-        st.write('')
+        if wbscode:
 
+            wbs_sb = transaction[
+                (transaction['Project definition'] == wbscode) &
+                (transaction['Document type'] == 'SB')
+            ].copy()
 
-    col14, col15 = st.columns(2)
+            # wbs_sb_value = wbs_sb['Val/COArea Crcy'].sum()
+            #
+            # wbs_sb_value = abs(wbs_sb_value)
+            #
+            # st.subheader(f'Cumulative Amount: {get_amount_in_cr(wbs_sb_value)}')
 
-    with col14:
-        # If a WBS code is selected, generate and display FUR
-        if wbs_code:
-            # Generate FUR & store it into a DataFrame
-            df_wbs_code = get_fur(wbs_code)
+            wbs_sb_csv = convert_df(wbs_sb)
 
-            # Change Year to String
-            df_wbs_code['Fiscal Year'] = df_wbs_code['Fiscal Year'].astype(str)
+            st.download_button(
+                label='Download all Transactions',
+                data=wbs_sb_csv,
+                file_name=f'Transactions for {wbscode}.csv',
+                mime='text/csv',
+                use_container_width=True,
+                type='primary'
+            )
 
-            # Prepare data of the amount which flowed 'To' the WBS Code
-            df_wbs_code_to = df_wbs_code[df_wbs_code['Val/COArea Crcy'] < 0].copy()
+        else:
+            st.write()
 
-            # Change the amount to positive
-            df_wbs_code_to['Val/COArea Crcy'] = df_wbs_code_to['Val/COArea Crcy'].abs()
+    # Display Flow breakup
+    st.write('')
 
-            # Prepare data of the amount which flowed 'From' the WBS Code
-            df_wbs_code_from = df_wbs_code[df_wbs_code['Val/COArea Crcy'] > 0].copy()
+    # If a WBS code is selected, generate and display FUR
+    if wbscode:
+        # Generate FUR & store it into a DataFrame
+        df_wbs_code = get_fur(wbscode)
 
-            # Display FUR
-            st.subheader('Inflow')
-            st.dataframe(df_wbs_code_to.pivot_table(
-                index=['Fiscal Year', 'Project definition', 'Object'],
-                values=['Val/COArea Crcy'],
-                aggfunc='sum'
-            ), hide_index=False, use_container_width=True)
+        # Calculate amount values for different breakup
+        ## Fund
+        ### Inflow
+        fund_inflow = get_flow(df_wbs_code, 'inflow')
 
-    with col15:
-        st.subheader('Outflow')
-        st.dataframe(df_wbs_code_from.pivot_table(
-            index=['Fiscal Year', 'Project definition', 'Object'],
-            values=['Val/COArea Crcy'],
-            aggfunc='sum'
-        ), hide_index=False, use_container_width=True)
+        # Get the Amount Value
+        try:
+            fund_inflow_value = fund_inflow['Val/COArea Crcy'].sum()
 
-    st.dataframe(df_wbs_code, hide_index=True, use_container_width=True)
+        except KeyError:
+            fund_inflow_value = 0
+
+        ### Outflow
+        fund_outflow = get_flow(df_wbs_code, 'outflow')
+
+        try:
+            fund_outflow_value = fund_outflow['Val/COArea Crcy'].sum()
+
+        except KeyError:
+            fund_outflow_value = 0
+
+        ## Admin
+        ### Inflow
+        admin_inflow = get_admin_expense(wbscode, 'inflow')
+
+        # Get the Amount Value
+        try:
+            admin_inflow_value = admin_inflow['Val/COArea Crcy'].sum()
+
+        except KeyError:
+            admin_inflow_value = 0
+
+        ### Outflow
+        admin_outflow = get_admin_expense(wbscode, 'outflow')
+
+        # Get the Amount Value
+        try:
+            admin_outflow_value = admin_outflow['Val/COArea Crcy'].sum()
+
+        except KeyError:
+            admin_outflow_value = 0
+
+        ## Interests
+        ### Inflow
+        interests_inflow = get_interests(wbscode, 'inflow')
+
+        # Get the Amount Value
+        try:
+            interests_inflow_value = interests_inflow['Val/COArea Crcy'].sum()
+
+        except KeyError:
+            interests_inflow_value = 0
+
+        ### Outflow
+        interests_outflow = get_interests(wbscode, 'outflow')
+
+        # Get the Amount Value
+        try:
+            interests_outflow_value = interests_outflow['Val/COArea Crcy'].sum()
+
+        except KeyError:
+            interests_outflow_value = 0
+
+        ## Others
+        ### Inflow
+        # other_inflow = get_flow(transaction, 'inflow')
+        #
+        # # Filter for the required WBS code
+        # other_inflow = other_inflow[other_inflow['Project definition'] == wbscode]
+
+        other_inflow = get_flow(wbs_sb, 'inflow')
+
+        inflow_ref = pd.concat([fund_inflow['Ref. document number'], admin_inflow['Ref. document number'],
+                                interests_inflow['Ref. document number']], ignore_index=True)
+
+        other_inflow = other_inflow[~other_inflow['Ref. document number'].isin(inflow_ref)]
+
+        # Get the Amount Value
+        try:
+            other_inflow_value = other_inflow['Val/COArea Crcy'].sum()
+            other_inflow_value = other_inflow_value - (fund_inflow_value + admin_inflow_value + interests_inflow_value)
+
+            if other_inflow_value < 0:
+                other_inflow_value = 0
+
+        except KeyError:
+            other_inflow_value = 0
+
+        ### Outflow
+        # other_outflow = get_flow(transaction, 'outflow')
+        #
+        # # Filter for the required WBS code
+        # other_outflow = other_outflow[other_outflow['Project definition'] == wbscode]
+
+        other_outflow = get_flow(wbs_sb, 'outflow')
+
+        outflow_ref = pd.concat([fund_outflow['Ref. document number'], admin_outflow['Ref. document number'],
+                                interests_outflow['Ref. document number']], ignore_index=True)
+
+        other_outflow = other_outflow[~other_outflow['Ref. document number'].isin(outflow_ref)]
+
+        # Get the Amount Value
+        try:
+            other_outflow_value = other_outflow['Val/COArea Crcy'].sum()
+            other_outflow_value = other_outflow_value - (
+                    fund_outflow_value + admin_outflow_value + interests_outflow_value)
+
+            if other_outflow_value < 0:
+                other_outflow_value = 0
+
+        except KeyError:
+            other_outflow_value = 0
+
+        # Display Breakup in Table
+        st.write('### WBS Breakup')
+
+        wbs_breakup = pd.DataFrame(
+            data = {
+                'Fund': [fund_inflow_value, fund_outflow_value],
+                'Admin Expenses': [admin_inflow_value, admin_outflow_value],
+                'Interests': [interests_inflow_value, interests_outflow_value],
+                'Other (IITB Main Accounts / IRCC)': [other_inflow_value, other_outflow_value]
+            }, index = ['From', 'To']
+        )
+
+        st.dataframe(wbs_breakup, hide_index=False, use_container_width=True,
+                     # column_config={
+                     #     'Fund': st.column_config.NumberColumn('Fund', format='₹'),
+                     # }
+                     )
+
+        st.write('### Detailed WBS Breakup')
+        with st.expander('### Detailed WBS Breakup'):
+
+            # Display Fund
+            if fund_inflow.shape[0] != 0 or fund_outflow.shape[0] != 0:
+                col14, col15 = st.columns(2)
+
+                with col14:
+                    # Display Fund Inflow
+                    st.subheader(f'⬇️ Fund Inflow: {get_amount_in_cr(fund_inflow_value)}')
+                    st.dataframe(fund_inflow, hide_index=True, use_container_width=True)
+
+                with col15:
+                    # Display Fund Outflow
+                    st.subheader(f'⬆️ Fund Outflow: {get_amount_in_cr(fund_outflow_value)}')
+                    st.dataframe(fund_outflow, hide_index=True, use_container_width=True)
+
+            # Display Admin Expense
+            if admin_inflow.shape[0] != 0 or admin_outflow.shape[0] != 0:
+                col16, col17 = st.columns(2)
+
+                with col16:
+                    # Display Admin Expense Inflow
+                    st.subheader(f'⬇️ Admin Expense Inflow: {get_amount_in_cr(admin_inflow_value)}')
+                    st.dataframe(admin_inflow, hide_index=True, use_container_width=True)
+
+                with col17:
+                    # Display Admin Expense Outflow
+                    st.subheader(f'⬆️ Admin Expense Outflow: {get_amount_in_cr(admin_outflow_value)}')
+                    st.dataframe(admin_outflow, hide_index=True, use_container_width=True)
+
+            # Display Interests
+            if interests_inflow.shape[0] != 0 or interests_outflow.shape[0] != 0:
+                col18, col19 = st.columns(2)
+
+                with col18:
+                    # Display Interests Inflow
+                    st.subheader(f'⬇️ Interests Inflow: {get_amount_in_cr(interests_inflow_value)}')
+                    st.dataframe(interests_inflow, hide_index=True, use_container_width=True)
+
+                with col19:
+                    # Display Interests Outflow
+                    st.subheader(f'⬆️ Interests Outflow: {get_amount_in_cr(interests_outflow_value)}')
+                    st.dataframe(interests_outflow, hide_index=True, use_container_width=True)
+
+            # Other expenses
+            if other_inflow_value != 0 or other_outflow_value != 0:
+                col20, col21 = st.columns(2)
+
+                with col20:
+                    # Display Main account & IRCC Inflow
+                    st.subheader(
+                        f'⬇️ Others (Transferred from IITB Main Accounts / IRCC): {get_amount_in_cr(other_inflow_value)}')
+                    st.dataframe(other_inflow, hide_index=True, use_container_width=True)
+
+                with col21:
+                    # Display Main account & IRCC Inflow
+                    st.subheader(
+                        f'⬇️ Others (Transferred to IITB Main Accounts / IRCC): {get_amount_in_cr(other_outflow_value)}')
+                    st.dataframe(other_outflow, hide_index=True, use_container_width=True)
+
+    # if wbscode:
+    #     st.dataframe(df_wbs_code, hide_index=True, use_container_width=True)
